@@ -7,56 +7,45 @@ from dotenv import load_dotenv
 from datetime import datetime
 
 # --- Configuration & Secrets Handling ---
-# This logic checks if we are running in the Streamlit cloud.
-# If so, it uses the built-in secrets manager. Otherwise, it uses the local .env file.
 try:
-    # Use secrets from Streamlit Community Cloud
     AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
     AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
     AWS_REGION = st.secrets["AWS_DEFAULT_REGION"]
     BUCKET = st.secrets["BUCKET_NAME"]
-    APP_PASSWORD = st.secrets["APP_PASSWORD"] # The password to access the app
+    APP_PASSWORD = st.secrets["APP_PASSWORD"]
     ROL_KEY = st.secrets.get("ROL_KEY", "rolodex.csv")
     CONTACTS_KEY = st.secrets.get("CONTACTS_KEY", "partnercontacts.csv")
-
 except (FileNotFoundError, KeyError):
-    # Fallback to .env file for local development
     load_dotenv()
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
     AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
     AWS_REGION = os.getenv("AWS_DEFAULT_REGION")
     BUCKET = os.getenv("BUCKET_NAME")
-    APP_PASSWORD = os.getenv("APP_PASSWORD") # Load password from .env for local use
+    APP_PASSWORD = os.getenv("APP_PASSWORD")
     ROL_KEY = os.getenv("ROL_KEY", "rolodex.csv")
     CONTACTS_KEY = os.getenv("CONTACTS_KEY", "partnercontacts.csv")
 
 # --- Password Protection ---
 def check_password():
-    """Returns `True` if the user had the correct password."""
     def password_entered():
-        """Checks whether a password entered by the user is correct."""
         if st.session_state["password"] == APP_PASSWORD:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # First run, show input for password.
         st.text_input("Password", type="password", on_change=password_entered, key="password")
         st.write("Please enter the password to access the S3 Bucket Manager.")
         return False
     elif not st.session_state["password_correct"]:
-        # Password not correct, show input + error.
         st.text_input("Password", type="password", on_change=password_entered, key="password")
         st.error("😕 Password incorrect. Please try again.")
         return False
     else:
-        # Password correct.
         return True
 
 # --- Main Application Logic ---
-# The rest of the app will only run if the password is correct
 if check_password():
     # --- Initialize S3 Client ---
     def get_s3_client():
@@ -76,14 +65,12 @@ if check_password():
 
     s3 = get_s3_client()
 
-    # --- Streamlit Page Configuration ---
     st.set_page_config(page_title="S3 Bucket Manager", page_icon="🗃️", layout="centered")
     st.title("🗃️ S3 Bucket Manager")
     st.markdown("An easy interface to manage data files for the Patrick project.")
 
     # --- Helper Functions ---
     def clean_csv_file(file_obj):
-        """ Reads a CSV in a forgiving way, cleans it, and returns bytes for upload. """
         file_obj.seek(0)
         try:
             content = file_obj.read().decode("utf-8", errors="replace")
@@ -103,7 +90,6 @@ if check_password():
             raise ValueError(f"Failed to process CSV. Check file format. Original error: {e}")
 
     def upload_to_s3(file_obj, s3_key, s3_client):
-        """ Cleans, validates, backs up, and uploads a new CSV file to S3. """
         backup_key = f"backups/{os.path.basename(s3_key)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         try:
             st.info(f"Backing up existing '{s3_key}'...")
@@ -119,23 +105,25 @@ if check_password():
         s3_client.put_object(Bucket=BUCKET, Key=s3_key, Body=cleaned_data_bytes, ContentType="text/csv")
 
     def list_files_in_bucket(s3_client):
-        """ Returns a list of all files in the configured S3 bucket. """
-        files = []
+        """ Returns a list of files, or None if an error occurs. """
         try:
+            files = []
             paginator = s3_client.get_paginator('list_objects_v2')
             pages = paginator.paginate(Bucket=BUCKET)
             for page in pages:
                 if "Contents" in page:
                     for obj in page["Contents"]:
                         files.append(obj["Key"])
+            return files
         except Exception as e:
-            st.error(f"Could not list files in bucket: {e}")
-        return files
+            st.error(f"Could not list files in bucket. Please check your AWS IAM permissions. Error: {e}")
+            return None
 
     # --- Main App Interface ---
     upload_tab, delete_tab = st.tabs(["📤 Upload Files", "🗑️ Delete Files"])
 
     with upload_tab:
+        # ... (Upload tab code is unchanged) ...
         st.header("Upload New Data Files")
         st.markdown(f"Files uploaded here will overwrite `{ROL_KEY}` and `{CONTACTS_KEY}` in the S3 bucket.")
         
@@ -166,30 +154,34 @@ if check_password():
         st.header("Delete Files from S3")
         st.warning("⚠️ **Warning:** Deleting files is permanent and cannot be undone.")
         if not s3:
-            st.error("Cannot delete: S3 client is not initialized.")
+            st.error("Cannot list files: S3 client is not initialized.")
         else:
             all_files = list_files_in_bucket(s3)
-            files_to_delete = st.multoselect(
-                "Select files to delete:",
-                options=all_files,
-                help="You can select multiple files."
-            )
 
-            if files_to_delete:
-                st.markdown("---")
-                st.subheader("Confirmation")
-                st.write("You have selected the following files for deletion:")
-                for f in files_to_delete:
-                    st.write(f"- `{f}`")
-                
-                confirm = st.checkbox("Yes, I want to permanently delete these files.")
-                
-                if st.button("Delete Selected Files", disabled=not confirm):
-                    with st.spinner("Deleting files..."):
-                        try:
-                            delete_payload = [{"Key": key} for key in files_to_delete]
-                            s3.delete_objects(Bucket=BUCKET, Delete={"Objects": delete_payload})
-                            st.success(f"✅ Successfully deleted {len(files_to_delete)} files.")
-                            st.rerun() # Reruns the script to refresh the file list
-                        except Exception as e:
-                            st.error(f"❌ Deletion failed: {e}")
+            # --- THIS IS THE FIX ---
+            # Only show the multiselect if the list of files was successfully retrieved
+            if all_files is not None:
+                files_to_delete = st.multiselect(
+                    "Select files to delete:",
+                    options=all_files,
+                    help="You can select multiple files."
+                )
+
+                if files_to_delete:
+                    st.markdown("---")
+                    st.subheader("Confirmation")
+                    st.write("You have selected the following files for deletion:")
+                    for f in files_to_delete:
+                        st.write(f"- `{f}`")
+                    
+                    confirm = st.checkbox("Yes, I want to permanently delete these files.")
+                    
+                    if st.button("Delete Selected Files", disabled=not confirm):
+                        with st.spinner("Deleting files..."):
+                            try:
+                                delete_payload = [{"Key": key} for key in files_to_delete]
+                                s3.delete_objects(Bucket=BUCKET, Delete={"Objects": delete_payload})
+                                st.success(f"✅ Successfully deleted {len(files_to_delete)} files.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Deletion failed: {e}")
