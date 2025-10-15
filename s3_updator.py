@@ -9,7 +9,7 @@ import uuid
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Patrick Admin Panel",
+    page_title="Patrick - Admin Panel",
     page_icon="🛠️",
     layout="centered"
 )
@@ -60,7 +60,7 @@ def check_password():
 
 # --- Main Application Logic ---
 if check_password():
-    st.title("🛠️ Patrick Admin Panel")
+    st.title("🛠️ Patrick - Admin Panel")
     st.markdown("A unified interface for data management and AI agent interaction.")
 
     # --- AWS Client Initializations ---
@@ -254,4 +254,5 @@ if check_password():
                         error_message = f"An error occurred: {e}"
                         st.error(error_message)
                         st.session_state.messages.append({"role": "assistant", "content": error_message})
+
 
