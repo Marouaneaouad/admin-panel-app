@@ -9,7 +9,7 @@ import uuid
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="S3 & Bedrock Manager",
+    page_title="Patrick Admin Panel",
     page_icon="🛠️",
     layout="centered"
 )
@@ -60,7 +60,7 @@ def check_password():
 
 # --- Main Application Logic ---
 if check_password():
-    st.title("🛠️ S3 & Bedrock Manager")
+    st.title("🛠️ Patrick Admin Panel")
     st.markdown("A unified interface for data management and AI agent interaction.")
 
     # --- AWS Client Initializations ---
@@ -124,7 +124,7 @@ if check_password():
             return None
 
     # --- Main App Interface with Tabs ---
-    upload_tab, delete_tab, chat_tab = st.tabs(["📤 Upload & Transform", "🗑️ Delete Files", "🤖 Bedrock Agent Chat"])
+    upload_tab, delete_tab, chat_tab = st.tabs(["📤 Upload & Transform", "🗑️ Delete Files", "🤖 Chat with Patrick"])
 
     # --- Upload Tab Logic (FULL CODE RESTORED) ---
     with upload_tab:
@@ -254,3 +254,4 @@ if check_password():
                         error_message = f"An error occurred: {e}"
                         st.error(error_message)
                         st.session_state.messages.append({"role": "assistant", "content": error_message})
+
