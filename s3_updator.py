@@ -92,7 +92,7 @@ if check_password():
             s3_client.copy_object(Bucket=BUCKET, CopySource={"Bucket": BUCKET, "Key": s3_key}, Key=backup_key)
         except s3_client.exceptions.ClientError as e:
             if e.response['Error']['Code'] == '404': st.warning(f"No existing file for '{s3_key}'. A backup was not created.")
-            else: st.warning(f"Could not create backup for '{s_key}': {e}")
+            else: st.warning(f"Could not create backup for '{s3_key}': {e}")
         st.info(f"Uploading transformed file to '{s3_key}'...")
         s3_client.put_object(Bucket=BUCKET, Key=s3_key, Body=data_bytes, ContentType="text/csv")
 
@@ -137,8 +137,22 @@ if check_password():
             if st.button("Transform & Upload Contacts"):
                 if contacts_file and s3:
                     with st.spinner("Processing Partner Contacts file..."):
-                        # (Processing logic...)
-                        pass
+                        try:
+                            encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
+                            df = None
+                            for encoding in encodings:
+                                try:
+                                    contacts_file.seek(0)
+                                    df = pd.read_csv(contacts_file, encoding=encoding)
+                                    break
+                                except UnicodeDecodeError: continue
+                            if df is None: raise ValueError("Could not decode contacts file.")
+                            df.rename(columns={"Account Name": "Partner", "Account Owner": "Partner Manager"}, inplace=True)
+                            st.success("✅ Contacts columns renamed.")
+                            csv_bytes = df.to_csv(index=False).encode('utf-8')
+                            backup_and_upload_bytes(csv_bytes, CONTACTS_KEY, s3)
+                            st.success(f"✅ Successfully uploaded transformed data to `{CONTACTS_KEY}`.")
+                        except Exception as e: st.error(f"An error occurred with the Contacts file: {e}")
         with col2:
             st.subheader("Rolodex File")
             rolodex_timestamp = get_s3_file_timestamp(s3, ROL_KEY)
@@ -147,18 +161,92 @@ if check_password():
             if st.button("Transform & Upload Rolodex"):
                 if rolodex_file and s3:
                     with st.spinner("Processing Rolodex file..."):
-                        # (Processing logic...)
-                        pass
+                        try:
+                            encodings = ['utf-16', 'utf-8', 'latin-1']
+                            df = None
+                            for encoding in encodings:
+                                try:
+                                    rolodex_file.seek(0)
+                                    df = pd.read_csv(rolodex_file, encoding=encoding, sep='\t')
+                                    break
+                                except (UnicodeDecodeError, pd.errors.ParserError): continue
+                            if df is None: raise ValueError("Could not decode or parse Rolodex file.")
+                            first_col = df.columns[0]
+                            def extract_link(t):
+                                try:
+                                    if not isinstance(t, str): return ""
+                                    s = t.find('"') + 1; e = t.find('"', s)
+                                    return t[s:e].strip() if s > 0 and e > 0 else ""
+                                except Exception: return ""
+                            def extract_friendly(t):
+                                try:
+                                    if not isinstance(t, str) or not t.upper().startswith('=HYPERLINK'): return t
+                                    sep = ';' if ';' in t else ',';
+                                    if sep not in t: return t
+                                    p = t.split(sep, 1)[1]; s = p.find('"') + 1; e = p.find('"', s)
+                                    return p[s:e].strip() if s > 0 and e > 0 else t
+                                except Exception: return t
+                            df.insert(1, "Documentation Link", df[first_col].apply(extract_link))
+                            df[first_col] = df[first_col].apply(extract_friendly)
+                            st.success("✅ Rolodex data transformed.")
+                            csv_bytes = df.to_csv(index=False).encode('utf-8')
+                            backup_and_upload_bytes(csv_bytes, ROL_KEY, s3)
+                            st.success(f"✅ Successfully uploaded transformed data to `{ROL_KEY}`.")
+                        except Exception as e: st.error(f"An error occurred with the Rolodex file: {e}")
 
     # --- Delete Tab Logic ---
     with delete_tab:
-        # (Delete logic is unchanged)
-        pass
+        st.header("Delete Files from S3")
+        st.warning("⚠️ **Warning:** Deleting files is permanent and cannot be undone.")
+        if not s3: st.error("Cannot list files: S3 client is not initialized.")
+        else:
+            all_files = list_files_in_bucket(s3)
+            if all_files is not None:
+                files_to_delete = st.multiselect("Select files to delete:", options=all_files)
+                if files_to_delete:
+                    st.subheader("Confirmation")
+                    st.write("You have selected the following files for deletion:")
+                    for f in files_to_delete: st.write(f"- `{f}`")
+                    if st.checkbox("Yes, I want to permanently delete these files."):
+                        if st.button("Delete Selected Files"):
+                            with st.spinner("Deleting files..."):
+                                try:
+                                    s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": key} for key in files_to_delete]})
+                                    st.success(f"✅ Successfully deleted {len(files_to_delete)} files.")
+                                    st.rerun()
+                                except Exception as e: st.error(f"❌ Deletion failed: {e}")
     
     # --- Bedrock Agent Chat Tab Logic ---
     with chat_tab:
-        # (Chat logic is unchanged)
-        pass
+        st.header("Chat with Bedrock Agent")
+        st.markdown("Interact directly with the configured AWS Bedrock Agent.")
+        if "messages" not in st.session_state: st.session_state.messages = []
+        if "session_id" not in st.session_state: st.session_state.session_id = str(uuid.uuid4())
+
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+        if prompt := st.chat_input("What would you like to ask the agent?"):
+            st.chat_message("user").markdown(prompt)
+            st.session_state.messages.append({"role": "user", "content": prompt})
+
+            if not bedrock_agent_runtime:
+                st.error("Bedrock client is not available. Cannot proceed.")
+            else:
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        try:
+                            response = bedrock_agent_runtime.invoke_agent(agentId=BEDROCK_AGENT_ID, agentAliasId=BEDROCK_AGENT_ALIAS_ID, sessionId=st.session_state.session_id, inputText=prompt)
+                            full_response = ""
+                            for event in response.get("completion", []):
+                                chunk = event["chunk"]
+                                full_response += chunk["bytes"].decode()
+                            st.markdown(full_response)
+                            st.session_state.messages.append({"role": "assistant", "content": full_response})
+                        except Exception as e:
+                            error_message = f"An error occurred: {e}"
+                            st.error(error_message)
+                            st.session_state.messages.append({"role": "assistant", "content": error_message})
 
     # --- NEW: Performance Metrics Tab ---
     with metrics_tab:
