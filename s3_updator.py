@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import io
 import boto3
 import os
 from dotenv import load_dotenv
@@ -11,7 +10,7 @@ import uuid
 st.set_page_config(
     page_title="S3 & Bedrock Manager",
     page_icon="🛠️",
-    layout="centered"
+    layout="wide" # Changed to wide for better dashboard layout
 )
 
 # --- Configuration & Secrets Handling ---
@@ -109,100 +108,91 @@ if check_password():
             st.error(f"Could not list files in bucket. Check IAM permissions. Error: {e}")
             return None
     
-    # --- NEW: Function to get S3 file timestamp ---
     @st.cache_data(ttl=300) # Cache the result for 5 minutes
     def get_s3_file_timestamp(_s3_client, file_key):
-        """Gets the LastModified timestamp for a file in S3."""
-        if not _s3_client:
-            return "S3 client not available."
+        if not _s3_client: return "S3 client not available."
         try:
             response = _s3_client.head_object(Bucket=BUCKET, Key=file_key)
             last_modified_utc = response['LastModified']
-            # Convert to local time if needed, for now just format it
             return f"Last updated: {last_modified_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}"
         except _s3_client.exceptions.ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                return "File not found in S3."
-            else:
-                return f"Permission error checking S3. See logs."
-        except Exception as e:
-            return f"An error occurred: {e}"
-
+            error_code = e.response['Error']['Code']
+            if error_code == '404': return f"Error: File '{file_key}' not found in S3."
+            elif error_code == '403': return f"Error: Permission denied for '{file_key}'. Ensure user has 's3:HeadObject' permission."
+            else: return f"An S3 client error occurred: {e.response['Error']['Message']}"
+        except Exception as e: return f"An unexpected error occurred: {e}"
 
     # --- Main App Interface with Tabs ---
-    upload_tab, delete_tab, chat_tab = st.tabs(["📤 Upload & Transform", "🗑️ Delete Files", "🤖 Bedrock Agent Chat"])
+    upload_tab, delete_tab, chat_tab, metrics_tab = st.tabs(["📤 Upload & Transform", "🗑️ Delete Files", "🤖 Bedrock Agent Chat", "📊 Performance Metrics"])
 
-    # --- Upload Tab Logic (with Data Freshness) ---
+    # --- Upload Tab Logic ---
     with upload_tab:
         st.header("Upload, Transform, and Load Files to S3")
-        
-        st.subheader("Partner Contacts File")
-        contacts_timestamp = get_s3_file_timestamp(s3, CONTACTS_KEY)
-        st.caption(contacts_timestamp) # Display the timestamp
-        contacts_file = st.file_uploader("Upload Partner Contacts CSV", type="csv", key="contacts_uploader")
-        if st.button("Transform & Upload Contacts"):
-            if contacts_file and s3:
-                with st.spinner("Processing Partner Contacts file..."):
-                    # (Rest of the upload logic is unchanged)
-                    try:
-                        encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
-                        df = None
-                        for encoding in encodings:
-                            try:
-                                contacts_file.seek(0)
-                                df = pd.read_csv(contacts_file, encoding=encoding)
-                                break
-                            except UnicodeDecodeError: continue
-                        if df is None: raise ValueError("Could not decode contacts file.")
-                        df.rename(columns={"Account Name": "Partner", "Account Owner": "Partner Manager"}, inplace=True)
-                        st.success("✅ Contacts columns renamed.")
-                        csv_bytes = df.to_csv(index=False).encode('utf-8')
-                        backup_and_upload_bytes(csv_bytes, CONTACTS_KEY, s3)
-                        st.success(f"✅ Successfully uploaded transformed data to `{CONTACTS_KEY}`.")
-                    except Exception as e: st.error(f"An error occurred with the Contacts file: {e}")
-        
-        st.markdown("---")
-
-        st.subheader("Rolodex File")
-        rolodex_timestamp = get_s3_file_timestamp(s3, ROL_KEY)
-        st.caption(rolodex_timestamp) # Display the timestamp
-        rolodex_file = st.file_uploader("Upload Rolodex CSV/TSV", type="csv", key="rolodex_uploader")
-        if st.button("Transform & Upload Rolodex"):
-            if rolodex_file and s3:
-                with st.spinner("Processing Rolodex file..."):
-                    # (Rest of the upload logic is unchanged)
-                    try:
-                        encodings = ['utf-16', 'utf-8', 'latin-1']
-                        df = None
-                        for encoding in encodings:
-                            try:
-                                rolodex_file.seek(0)
-                                df = pd.read_csv(rolodex_file, encoding=encoding, sep='\t')
-                                break
-                            except (UnicodeDecodeError, pd.errors.ParserError): continue
-                        if df is None: raise ValueError("Could not decode or parse Rolodex file.")
-                        first_col = df.columns[0]
-                        def extract_link(t):
-                            try:
-                                if not isinstance(t, str): return ""
-                                s = t.find('"') + 1; e = t.find('"', s)
-                                return t[s:e].strip() if s > 0 and e > 0 else ""
-                            except Exception: return ""
-                        def extract_friendly(t):
-                            try:
-                                if not isinstance(t, str) or not t.upper().startswith('=HYPERLINK'): return t
-                                sep = ';' if ';' in text else ',';
-                                if sep not in t: return t
-                                p = t.split(sep, 1)[1]; s = p.find('"') + 1; e = p.find('"', s)
-                                return p[s:e].strip() if s > 0 and e > 0 else t
-                            except Exception: return t
-                        df.insert(1, "Documentation Link", df[first_col].apply(extract_link))
-                        df[first_col] = df[first_col].apply(extract_friendly)
-                        st.success("✅ Rolodex data transformed.")
-                        csv_bytes = df.to_csv(index=False).encode('utf-8')
-                        backup_and_upload_bytes(csv_bytes, ROL_KEY, s3)
-                        st.success(f"✅ Successfully uploaded transformed data to `{ROL_KEY}`.")
-                    except Exception as e: st.error(f"An error occurred with the Rolodex file: {e}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Partner Contacts File")
+            contacts_timestamp = get_s3_file_timestamp(s3, CONTACTS_KEY)
+            st.caption(contacts_timestamp)
+            contacts_file = st.file_uploader("Upload Partner Contacts CSV", type="csv", key="contacts_uploader")
+            if st.button("Transform & Upload Contacts"):
+                if contacts_file and s3:
+                    with st.spinner("Processing Partner Contacts file..."):
+                        try:
+                            encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
+                            df = None
+                            for encoding in encodings:
+                                try:
+                                    contacts_file.seek(0)
+                                    df = pd.read_csv(contacts_file, encoding=encoding)
+                                    break
+                                except UnicodeDecodeError: continue
+                            if df is None: raise ValueError("Could not decode contacts file.")
+                            df.rename(columns={"Account Name": "Partner", "Account Owner": "Partner Manager"}, inplace=True)
+                            st.success("✅ Contacts columns renamed.")
+                            csv_bytes = df.to_csv(index=False).encode('utf-8')
+                            backup_and_upload_bytes(csv_bytes, CONTACTS_KEY, s3)
+                            st.success(f"✅ Successfully uploaded transformed data to `{CONTACTS_KEY}`.")
+                        except Exception as e: st.error(f"An error occurred with the Contacts file: {e}")
+        with col2:
+            st.subheader("Rolodex File")
+            rolodex_timestamp = get_s3_file_timestamp(s3, ROL_KEY)
+            st.caption(rolodex_timestamp)
+            rolodex_file = st.file_uploader("Upload Rolodex CSV/TSV", type="csv", key="rolodex_uploader")
+            if st.button("Transform & Upload Rolodex"):
+                if rolodex_file and s3:
+                    with st.spinner("Processing Rolodex file..."):
+                        try:
+                            encodings = ['utf-16', 'utf-8', 'latin-1']
+                            df = None
+                            for encoding in encodings:
+                                try:
+                                    rolodex_file.seek(0)
+                                    df = pd.read_csv(rolodex_file, encoding=encoding, sep='\t')
+                                    break
+                                except (UnicodeDecodeError, pd.errors.ParserError): continue
+                            if df is None: raise ValueError("Could not decode or parse Rolodex file.")
+                            first_col = df.columns[0]
+                            def extract_link(t):
+                                try:
+                                    if not isinstance(t, str): return ""
+                                    s = t.find('"') + 1; e = t.find('"', s)
+                                    return t[s:e].strip() if s > 0 and e > 0 else ""
+                                except Exception: return ""
+                            def extract_friendly(t):
+                                try:
+                                    if not isinstance(t, str) or not t.upper().startswith('=HYPERLINK'): return t
+                                    sep = ';' if ';' in t else ',';
+                                    if sep not in t: return t
+                                    p = t.split(sep, 1)[1]; s = p.find('"') + 1; e = p.find('"', s)
+                                    return p[s:e].strip() if s > 0 and e > 0 else t
+                                except Exception: return t
+                            df.insert(1, "Documentation Link", df[first_col].apply(extract_link))
+                            df[first_col] = df[first_col].apply(extract_friendly)
+                            st.success("✅ Rolodex data transformed.")
+                            csv_bytes = df.to_csv(index=False).encode('utf-8')
+                            backup_and_upload_bytes(csv_bytes, ROL_KEY, s3)
+                            st.success(f"✅ Successfully uploaded transformed data to `{ROL_KEY}`.")
+                        except Exception as e: st.error(f"An error occurred with the Rolodex file: {e}")
 
     # --- Delete Tab Logic ---
     with delete_tab:
@@ -257,3 +247,31 @@ if check_password():
                             error_message = f"An error occurred: {e}"
                             st.error(error_message)
                             st.session_state.messages.append({"role": "assistant", "content": error_message})
+
+    # --- NEW: Performance Metrics Tab ---
+    with metrics_tab:
+        st.header("Patrick Agent - Performance Dashboard")
+        st.info("Coming Soon: This dashboard will provide live metrics from the DynamoDB logs.")
+        st.markdown("---")
+
+        # Mockup of the metrics dashboard
+        st.subheader("Key Metrics (Last 7 Days)")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Queries", "1,234", "12%")
+        with col2:
+            st.metric("Avg. Latency (ms)", "850", "-8%", help="Lower is better")
+        with col3:
+            st.metric("Total Tokens Used", "4.1M", "5%")
+        
+        st.markdown("<br>", unsafe_allow_html=True) # Spacer
+
+        st.subheader("Daily Query Volume")
+        # Create a sample dataframe for the chart
+        mock_data = {
+            'date': pd.to_datetime(['2025-10-09', '2025-10-10', '2025-10-11', '2025-10-12', '2025-10-13', '2025-10-14', '2025-10-15']),
+            'queries': [150, 180, 210, 160, 250, 220, 280]
+        }
+        mock_df = pd.DataFrame(mock_data).set_index('date')
+        st.bar_chart(mock_df)
