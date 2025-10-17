@@ -3,8 +3,9 @@ import pandas as pd
 import boto3
 import os
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import uuid
+import random
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -14,6 +15,7 @@ st.set_page_config(
 )
 
 # --- Configuration & Secrets Handling ---
+# Tries to get secrets from Streamlit Cloud, falls back to .env for local development
 try:
     AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
     AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
@@ -62,29 +64,29 @@ if check_password():
     st.title("🛠️ S3 & Bedrock Manager")
     st.markdown("A unified interface for data management and AI agent interaction.")
 
-    # --- AWS Client Initializations ---
+    # --- AWS Client Initializations (kept for other tabs) ---
     @st.cache_resource
-    def get_s3_client():
+    def get_s3_client(access_key, secret_key, region):
         try:
-            client = boto3.client("s3", aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY, region_name=AWS_REGION)
+            client = boto3.client("s3", aws_access_key_id=access_key, aws_secret_access_key=secret_key, region_name=region)
             return client
         except Exception as e:
             st.error(f"Error initializing S3 client: {e}")
             return None
     
     @st.cache_resource
-    def get_bedrock_client():
+    def get_bedrock_client(access_key, secret_key, region):
         try:
-            client = boto3.client("bedrock-agent-runtime", aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY, region_name=AWS_REGION)
+            client = boto3.client("bedrock-agent-runtime", aws_access_key_id=access_key, aws_secret_access_key=secret_key, region_name=region)
             return client
         except Exception as e:
             st.error(f"Error initializing Bedrock client: {e}")
             return None
 
-    s3 = get_s3_client()
-    bedrock_agent_runtime = get_bedrock_client()
+    s3 = get_s3_client(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
+    bedrock_agent_runtime = get_bedrock_client(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
     
-    # --- Helper Functions ---
+    # --- Helper Functions (used across tabs) ---
     def backup_and_upload_bytes(data_bytes, s3_key, s3_client):
         backup_key = f"backups/{os.path.basename(s3_key)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         try:
@@ -108,14 +110,14 @@ if check_password():
             st.error(f"Could not list files in bucket. Check IAM permissions. Error: {e}")
             return None
     
-    @st.cache_data(ttl=300) # Cache the result for 5 minutes
+    @st.cache_data(ttl=300)
     def get_s3_file_timestamp(_s3_client, file_key):
         if not _s3_client: return "S3 client not available."
         try:
             response = _s3_client.head_object(Bucket=BUCKET, Key=file_key)
             last_modified_utc = response['LastModified']
             return f"Last updated: {last_modified_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-        except _s3_client.exceptions.ClientError as e:
+        except ClientError as e:
             error_code = e.response['Error']['Code']
             if error_code == '404': return f"Error: File '{file_key}' not found in S3."
             elif error_code == '403': return f"Error: Permission denied for '{file_key}'. Ensure user has 's3:HeadObject' permission."
@@ -128,8 +130,9 @@ if check_password():
     # --- Upload Tab Logic ---
     with upload_tab:
         st.header("Upload, Transform, and Load Files to S3")
-        col1, col2 = st.columns(2)
-        with col1:
+        # ... (rest of the upload tab code remains the same) ...
+        col1_up, col2_up = st.columns(2)
+        with col1_up:
             st.subheader("Partner Contacts File")
             contacts_timestamp = get_s3_file_timestamp(s3, CONTACTS_KEY)
             st.caption(contacts_timestamp)
@@ -153,7 +156,7 @@ if check_password():
                             backup_and_upload_bytes(csv_bytes, CONTACTS_KEY, s3)
                             st.success(f"✅ Successfully uploaded transformed data to `{CONTACTS_KEY}`.")
                         except Exception as e: st.error(f"An error occurred with the Contacts file: {e}")
-        with col2:
+        with col2_up:
             st.subheader("Rolodex File")
             rolodex_timestamp = get_s3_file_timestamp(s3, ROL_KEY)
             st.caption(rolodex_timestamp)
@@ -194,6 +197,7 @@ if check_password():
                             st.success(f"✅ Successfully uploaded transformed data to `{ROL_KEY}`.")
                         except Exception as e: st.error(f"An error occurred with the Rolodex file: {e}")
 
+
     # --- Delete Tab Logic ---
     with delete_tab:
         st.header("Delete Files from S3")
@@ -215,7 +219,7 @@ if check_password():
                                     st.success(f"✅ Successfully deleted {len(files_to_delete)} files.")
                                     st.rerun()
                                 except Exception as e: st.error(f"❌ Deletion failed: {e}")
-    
+
     # --- Bedrock Agent Chat Tab Logic ---
     with chat_tab:
         st.header("Chat with Bedrock Agent")
@@ -241,35 +245,128 @@ if check_password():
                             for event in response.get("completion", []):
                                 chunk = event["chunk"]
                                 full_response += chunk["bytes"].decode()
+                            
                             st.markdown(full_response)
                             st.session_state.messages.append({"role": "assistant", "content": full_response})
                         except Exception as e:
                             error_message = f"An error occurred: {e}"
                             st.error(error_message)
                             st.session_state.messages.append({"role": "assistant", "content": error_message})
-
+    
     # --- Performance Metrics Tab ---
     with metrics_tab:
         st.header("Patrick Agent - Performance Dashboard")
-        st.info("Coming Soon: This dashboard will provide live metrics from the DynamoDB logs.")
+
+        # --- MOCK DATA GENERATION ---
+        @st.cache_data(ttl=60) # Cache for 60 seconds
+        def generate_mock_data():
+            """Creates a fake DataFrame simulating DynamoDB logs."""
+            num_entries = 100
+            data = []
+            for i in range(num_entries):
+                # Generate a timestamp within the last 7 days
+                timestamp = datetime.now(timezone.utc) - timedelta(days=random.randint(0, 6), hours=random.randint(0, 23))
+                
+                # Simulate latency
+                latency = random.randint(800, 7500) # milliseconds
+                
+                # Simulate feedback (70% positive, 20% negative, 10% no feedback)
+                feedback_options = ['positive'] * 7 + ['negative'] * 2 + [None]
+                feedback = random.choice(feedback_options)
+
+                # Simulate token usage
+                input_tokens = random.randint(1500, 4500)
+                output_tokens = random.randint(50, 300)
+
+                data.append({
+                    "timestamp": timestamp,
+                    "userMessage": f"Sample user query #{i+1}",
+                    "agentResponse": f"Sample agent response #{i+1}",
+                    "agentLatency": latency,
+                    "feedbackStatus": feedback,
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "status": "SUCCESS"
+                })
+            
+            df = pd.DataFrame(data)
+            # Ensure timestamp is in datetime format and sort
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df.sort_values(by="timestamp", ascending=False, inplace=True)
+            return df
+
+        # --- METRIC CALCULATION ---
+        def calculate_metrics(df):
+            """Calculates all key metrics from the log data."""
+            # Filter for data from the last 7 days
+            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            recent_df = df[df['timestamp'] >= seven_days_ago]
+            
+            total_queries = len(recent_df)
+            avg_latency_ms = recent_df['agentLatency'].mean()
+            
+            # Feedback metrics
+            feedback_counts = recent_df['feedbackStatus'].value_counts()
+            positive_feedback = feedback_counts.get('positive', 0)
+            total_feedback = feedback_counts.sum()
+            positive_rate = (positive_feedback / total_feedback * 100) if total_feedback > 0 else 0
+            
+            # Token & Cost metrics
+            total_input_tokens = recent_df['inputTokens'].sum()
+            total_output_tokens = recent_df['outputTokens'].sum()
+            total_tokens = total_input_tokens + total_output_tokens
+            
+            # Pricing: Claude 3.5 Sonnet (replace with Haiku if confirmed)
+            # Input: $3 / 1M tokens, Output: $15 / 1M tokens
+            # Pricing: Claude 3 Haiku
+            input_cost_per_million = 0.25 # $0.25 per 1M tokens
+            output_cost_per_million = 1.25 # $1.25 per 1M tokens
+
+            total_cost = (total_input_tokens / 1_000_000 * input_cost_per_million) + \
+                         (total_output_tokens / 1_000_000 * output_cost_per_million)
+            
+            avg_cost_per_query = total_cost / total_queries if total_queries > 0 else 0
+            
+            return {
+                "total_queries": total_queries,
+                "avg_latency_sec": avg_latency_ms / 1000 if not pd.isna(avg_latency_ms) else 0,
+                "positive_feedback_rate": positive_rate,
+                "total_tokens": total_tokens,
+                "total_cost": total_cost,
+                "avg_cost_per_query": avg_cost_per_query
+            }
+
+        # --- DASHBOARD UI ---
+        # NOTE: In a real app, you would fetch from DynamoDB here instead of generating mock data.
+        log_df = generate_mock_data()
+        metrics = calculate_metrics(log_df)
+
+        st.markdown("### Key Metrics (Last 7 Days)")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Queries", f"{metrics['total_queries']:,}")
+        col2.metric("Avg. Agent Latency", f"{metrics['avg_latency_sec']:.2f} s")
+        col3.metric("Positive Feedback", f"{metrics['positive_feedback_rate']:.1f}%")
+        col4.metric("Total Cost (Est.)", f"${metrics['total_cost']:.2f}")
+
         st.markdown("---")
-
-        st.subheader("Key Metrics (Last 7 Days)")
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Queries", "1,234", "12%")
-        with col2:
-            st.metric("Avg. Latency (ms)", "850", "-8%", help="Lower is better")
-        with col3:
-            st.metric("Total Tokens Used", "4.1M", "5%")
-        
-        st.markdown("<br>", unsafe_allow_html=True) 
+        col5, col6 = st.columns(2)
+        with col5:
+            st.subheader("Token Consumption")
+            st.metric("Total Tokens Used", f"{metrics['total_tokens']:,}")
+            st.metric("Avg. Cost per Query", f"${metrics['avg_cost_per_query']:.4f}")
 
-        st.subheader("Daily Query Volume")
-        mock_data = {
-            'date': pd.to_datetime(['2025-10-09', '2025-10-10', '2025-10-11', '2025-10-12', '2025-10-13', '2025-10-14', '2025-10-15']),
-            'queries': [150, 180, 210, 160, 250, 220, 280]
-        }
-        mock_df = pd.DataFrame(mock_data).set_index('date')
-        st.bar_chart(mock_df)
+        with col6:
+            st.subheader("Daily Query Volume")
+            daily_counts = log_df.set_index('timestamp').resample('D').size()
+            daily_counts.index = daily_counts.index.strftime('%b %d')
+            st.bar_chart(daily_counts)
+        
+        st.markdown("---")
+        
+        st.subheader("Recent Interactions")
+        st.dataframe(
+            log_df[['timestamp', 'userMessage', 'agentResponse', 'agentLatency', 'feedbackStatus']].head(20),
+            use_container_width=True
+        )
