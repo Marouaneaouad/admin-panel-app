@@ -9,7 +9,7 @@ import random
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Attr
 from decimal import Decimal
-import altair as alt  # Required for new charts
+import altair as alt  
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -148,12 +148,12 @@ if check_password():
 
     # --- Upload Tab Logic ---
     with upload_tab:
-        st.header("Upload, Transform, and Load Files to S3")
+        st.header("📤 Upload, Transform, and Load Files to S3")
         
         col1_up, col2_up, col3_up = st.columns(3)
         
         with col1_up:
-            st.subheader("Partner Contacts File")
+            st.subheader("📄 Partner Contacts File")
             contacts_timestamp = get_s3_file_timestamp(s3, CONTACTS_KEY)
             st.caption(contacts_timestamp)
             contacts_file = st.file_uploader("Upload Partner Contacts CSV", type="csv", key="contacts_uploader")
@@ -178,7 +178,7 @@ if check_password():
                         except Exception as e: st.error(f"An error occurred with the Contacts file: {e}")
         
         with col2_up:
-            st.subheader("Rolodex File")
+            st.subheader("📇 Rolodex File")
             rolodex_timestamp = get_s3_file_timestamp(s3, ROL_KEY)
             st.caption(rolodex_timestamp)
             rolodex_file = st.file_uploader("Upload Rolodex CSV/TSV", type="csv", key="rolodex_uploader")
@@ -219,7 +219,7 @@ if check_password():
                         except Exception as e: st.error(f"An error occurred with the Rolodex file: {e}")
 
         with col3_up:
-            st.subheader("Badging Data File")
+            st.subheader("📛 Badging Data File")
             badging_timestamp = get_s3_file_timestamp(s3, BADGING_KEY)
             st.caption(badging_timestamp)
             badging_file = st.file_uploader("Upload Badging Data CSV", type="csv", key="badging_uploader")
@@ -236,7 +236,7 @@ if check_password():
 
     # --- Delete Tab Logic ---
     with delete_tab:
-        st.header("Delete Files from S3")
+        st.header("🗑️ Delete Files from S3")
         st.warning("⚠️ **Warning:** Deleting files is permanent and cannot be undone.")
         if not s3: st.error("Cannot list files: S3 client is not initialized.")
         else:
@@ -258,7 +258,7 @@ if check_password():
 
     # --- Bedrock Agent Chat Tab Logic ---
     with chat_tab:
-        st.header("Chat with Bedrock Agent")
+        st.header("🤖 Chat with Bedrock Agent")
         st.markdown("Interact directly with the configured AWS Bedrock Agent.")
         if "messages" not in st.session_state: st.session_state.messages = []
         if "session_id" not in st.session_state: st.session_state.session_id = str(uuid.uuid4())
@@ -291,7 +291,7 @@ if check_password():
     
     # --- Performance Metrics Tab ---
     with metrics_tab:
-        st.header("Agent Observability Hub")
+        st.header("📊 Agent Observability Hub")
 
         @st.cache_data(ttl=60)
         def fetch_dynamodb_data(_dynamodb_resource, table_name):
@@ -338,7 +338,6 @@ if check_password():
                     st.error("Critical: 'timestamp' column not found.")
                     df['timestamp'] = datetime.now(timezone.utc)
                 
-                # --- (CHANGED) Added 'sessionId' to the list of handled text columns ---
                 text_cols = ['feedbackStatus', 'feedbackReason', 'agentRationale', 
                              'userMessage', 'agentResponse', 'status', 'sessionId']
                 for col in text_cols:
@@ -356,14 +355,13 @@ if check_password():
                 st.info("Displaying empty dashboard.")
                 return pd.DataFrame()
 
-        # --- (CHANGED) Updated Metric Calculation ---
         def calculate_metrics(df):
             if df.empty:
                 return {
                     "total_queries": 0, "avg_latency_sec": 0, "positive_feedback_rate": 0,
                     "total_input_tokens": 0, "total_output_tokens": 0, 
                     "total_cost": 0, "avg_cost_per_query": 0,
-                    "total_errors": 0, "error_rate": 0  # <-- ADDED
+                    "total_errors": 0, "error_rate": 0
                 }
             
             total_queries = len(df)
@@ -379,7 +377,7 @@ if check_password():
             total_input_tokens = df['inputTokens'].sum()
             total_output_tokens = df['outputTokens'].sum()
             
-            # --- (ADDED) Error metrics ---
+            # Error metrics
             total_errors = (df['status'] != 'SUCCESS').sum()
             error_rate = (total_errors / total_queries * 100) if total_queries > 0 else 0
 
@@ -398,8 +396,8 @@ if check_password():
                 "total_output_tokens": total_output_tokens,
                 "total_cost": total_cost,
                 "avg_cost_per_query": avg_cost_per_query,
-                "total_errors": total_errors,  # <-- ADDED
-                "error_rate": error_rate      # <-- ADDED
+                "total_errors": total_errors,
+                "error_rate": error_rate
             }
 
         # --- DASHBOARD UI ---
@@ -414,37 +412,37 @@ if check_password():
         else:
             metrics = calculate_metrics(log_df)
 
-            st.markdown("### Key Metrics (Last 7 Days)")
+            st.markdown("### 📈 Key Metrics (Last 7 Days)")
             
-            # --- (CHANGED) Switched to 5 columns for new metrics ---
             col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("Total Queries", f"{metrics['total_queries']:,}")
             col2.metric("Avg. Agent Latency", f"{metrics['avg_latency_sec']:.2f} s")
             col3.metric("Positive Feedback", f"{metrics['positive_feedback_rate']:.1f}%")
-            col4.metric("Total Errors", f"{metrics['total_errors']:,}") # <-- ADDED
-            col5.metric("Error Rate", f"{metrics['error_rate']:.1f}%")   # <-- ADDED
+            col4.metric("Total Errors", f"{metrics['total_errors']:,}")
+            col5.metric("Error Rate", f"{metrics['error_rate']:.1f}%")
 
             st.markdown("---")
             
-            col_tk, col_cost, col_vol = st.columns(3)
+            # --- (CHANGED) Adjusted column ratios for better chart display ---
+            col_tk_cost, col_vol = st.columns([1, 1.5])
             
-            with col_tk:
-                st.subheader("Token Consumption")
-                st.metric("Total Input Tokens", f"{metrics['total_input_tokens']:,}")
-                st.metric("Total Output Tokens", f"{metrics['total_output_tokens']:,}")
-                
-            with col_cost:
-                st.subheader("Cost Analysis")
-                st.metric("Total Cost (Est.)", f"${metrics['total_cost']:.2f}")
-                st.metric("Avg. Cost per Query", f"${metrics['avg_cost_per_query']:.4f}")
+            with col_tk_cost:
+                st.subheader("💰 Token & Cost Analysis")
+                col_tk, col_cost = st.columns(2)
+                with col_tk:
+                    st.metric("Total Input Tokens", f"{metrics['total_input_tokens']:,}")
+                    st.metric("Total Output Tokens", f"{metrics['total_output_tokens']:,}")
+                with col_cost:
+                    st.metric("Total Cost (Est.)", f"${metrics['total_cost']:.2f}")
+                    st.metric("Avg. Cost per Query", f"${metrics['avg_cost_per_query']:.4f}")
 
             with col_vol:
-                st.subheader("Daily Query Volume")
+                st.subheader("🗓️ Daily Query Volume")
                 daily_counts_df = log_df.set_index('timestamp').resample('D').size().reset_index(name='count')
                 daily_counts_df['Date'] = daily_counts_df['timestamp'].dt.strftime('%b %d')
 
                 chart = alt.Chart(daily_counts_df).mark_bar().encode(
-                    x=alt.X('Date', sort=None),
+                    x=alt.X('Date', sort=None, title='Date'),
                     y=alt.Y('count', title='Total Queries'),
                     tooltip=['Date', alt.Tooltip('count', title='Total Queries')]
                 ).interactive()
@@ -452,17 +450,15 @@ if check_password():
             
             st.markdown("---")
 
-            # --- (NEW) Latency and Feedback Analysis Sections ---
-            col_lat, col_fb = st.columns(2)
+            # --- (CHANGED) Adjusted column ratios ---
+            col_lat, col_fb = st.columns([1.5, 1])
 
             with col_lat:
-                st.subheader("Latency Distribution")
-                # Calculate p90/p95
+                st.subheader("⏱️ Latency Distribution")
                 p90 = log_df['agentLatency'].quantile(0.90)
                 p95 = log_df['agentLatency'].quantile(0.95)
                 st.caption(f"**P90:** {p90:.0f} ms  |  **P95:** {p95:.0f} ms")
 
-                # Create histogram
                 chart = alt.Chart(log_df).mark_bar().encode(
                     x=alt.X('agentLatency', bin=alt.Bin(maxbins=50), title='Latency (ms)'),
                     y=alt.Y('count()', title='Query Count'),
@@ -471,7 +467,7 @@ if check_password():
                 st.altair_chart(chart, use_container_width=True)
 
             with col_fb:
-                st.subheader("Top Negative Feedback Drivers")
+                st.subheader("📉 Top Negative Feedback Drivers")
                 negative_feedback_df = log_df[
                     (log_df['feedbackStatus'] == 'negative') & 
                     (log_df['feedbackReason'] != 'N/A')
@@ -482,13 +478,20 @@ if check_password():
                 else:
                     reason_counts = negative_feedback_df['feedbackReason'].value_counts().reset_index()
                     reason_counts.columns = ['Reason', 'Count']
-                    st.dataframe(reason_counts, use_container_width=True, hide_index=True)
+                    
+                    # --- (CHANGED) Replaced dataframe with a horizontal bar chart ---
+                    chart = alt.Chart(reason_counts).mark_bar().encode(
+                        x=alt.X('Count:Q', title='Number of Reports'),
+                        y=alt.Y('Reason:N', title='Reason', sort='-x'), # Sort descending
+                        tooltip=['Reason', 'Count']
+                    ).interactive()
+                    
+                    st.altair_chart(chart, use_container_width=True)
 
             st.markdown("---")
             
-            # --- (CHANGED) Session Explorer (Idea 2) ---
-            st.subheader("Session Explorer")
-            st.markdown("Expand any session to see its full interaction thread.")
+            st.subheader("🔬 Session Explorer")
+            st.markdown("Expand any session to see its full interaction thread, sorted chronologically.")
 
             # Define column config once
             column_config={
@@ -502,7 +505,6 @@ if check_password():
                 "inputTokens": st.column_config.NumberColumn("Input Tokens"),
                 "outputTokens": st.column_config.NumberColumn("Output Tokens"),
                 "status": st.column_config.TextColumn("Status"),
-                # Hide columns we don't need
                 "interaction_id": None, "sessionId": None, "feedbackTimestamp": None,
                 "feedbackUser": None, "sourceChannel": None
             }
@@ -517,17 +519,16 @@ if check_password():
             if sessions.empty:
                 st.info("No sessions to display.")
             else:
-                # Loop through sessions and create an expander for each
                 for session_id, data in sessions.iterrows():
+                    # --- (CHANGED) Added emoji and bolded keys to expander title ---
                     summary = (
-                        f"**Session:** {session_id}  |  "
-                        f"**Messages:** {data['message_count']}  |  "
-                        f"**Errors:** {data['errors']}  |  "
+                        f"💬 **Session:** `{session_id}` | "
+                        f"**Messages:** {data['message_count']} | "
+                        f"**Errors:** {data['errors']} | "
                         f"**Last Active:** {data['latest_timestamp'].strftime('%Y-%m-%d %H:%M')}"
                     )
                     
                     with st.expander(summary):
-                        # Get the DF for this session and sort it chronologically
                         session_df = log_df[log_df['sessionId'] == session_id].sort_values(by='timestamp', ascending=True)
                         
                         st.data_editor(
