@@ -6,9 +6,10 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 import uuid
 import random
-from botocore.exceptions import ClientError  # Added for S3 error handling
-from boto3.dynamodb.conditions import Attr  # Added for DynamoDB queries
-from decimal import Decimal  # Added for DynamoDB number conversion
+from botocore.exceptions import ClientError
+from boto3.dynamodb.conditions import Attr
+from decimal import Decimal
+import altair as alt  # --- ADDED FOR BETTER CHARTS ---
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -27,14 +28,9 @@ try:
     APP_PASSWORD = st.secrets["APP_PASSWORD"]
     ROL_KEY = st.secrets.get("ROL_KEY", "rolodex.csv")
     CONTACTS_KEY = st.secrets.get("CONTACTS_KEY", "partnercontacts.csv")
-    
-    # --- (THING 1) Added Badging Key ---
     BADGING_KEY = st.secrets.get("BADGING_KEY", "masterbadgingboard.csv")
-    
     BEDROCK_AGENT_ID = st.secrets["BEDROCK_AGENT_ID"]
     BEDROCK_AGENT_ALIAS_ID = st.secrets["BEDROCK_AGENT_ALIAS_ID"]
-    
-    # --- (THING 2) Added DynamoDB Table Name ---
     DYNAMODB_TABLE_NAME = st.secrets.get("DYNAMODB_TABLE_NAME", "PatrickUsageLogs")
 
 except (FileNotFoundError, KeyError):
@@ -46,14 +42,9 @@ except (FileNotFoundError, KeyError):
     APP_PASSWORD = os.getenv("APP_PASSWORD")
     ROL_KEY = os.getenv("ROL_KEY", "rolodex.csv")
     CONTACTS_KEY = os.getenv("CONTACTS_KEY", "partnercontacts.csv")
-
-    # --- (THING 1) Added Badging Key ---
     BADGING_KEY = os.getenv("BADGING_KEY", "masterbadgingboard.csv")
-    
     BEDROCK_AGENT_ID = os.getenv("BEDROCK_AGENT_ID")
     BEDROCK_AGENT_ALIAS_ID = os.getenv("BEDROCK_AGENT_ALIAS_ID")
-    
-    # --- (THING 2) Added DynamoDB Table Name ---
     DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME", "PatrickUsageLogs")
 
 # --- Password Protection ---
@@ -101,7 +92,6 @@ if check_password():
             st.error(f"Error initializing Bedrock client: {e}")
             return None
 
-    # --- (THING 2) Added DynamoDB Resource ---
     @st.cache_resource
     def get_dynamodb_resource(access_key, secret_key, region):
         try:
@@ -113,8 +103,6 @@ if check_password():
 
     s3 = get_s3_client(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
     bedrock_agent_runtime = get_bedrock_client(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
-    
-    # --- (THING 2) Initialized DynamoDB Resource ---
     dynamodb = get_dynamodb_resource(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
     
     # --- Helper Functions (used across tabs) ---
@@ -156,13 +144,12 @@ if check_password():
         except Exception as e: return f"An unexpected error occurred: {e}"
 
     # --- Main App Interface with Tabs ---
-    upload_tab, delete_tab, chat_tab, metrics_tab = st.tabs(["📤 Upload & Transform", "🗑️ Delete Files", "🤖 Bedrock Agent Chat", "📊 Performance Metrics"])
+    upload_tab, delete_tab, chat_tab, metrics_tab = st.tabs(["📤 Upload & Transform", "🗑️ Delete Files", "🤖 Bedrock Agent Chat", "📊 Agent Observability Hub"])
 
     # --- Upload Tab Logic ---
     with upload_tab:
         st.header("Upload, Transform, and Load Files to S3")
         
-        # --- (THING 1) Changed to 3 columns ---
         col1_up, col2_up, col3_up = st.columns(3)
         
         with col1_up:
@@ -231,7 +218,6 @@ if check_password():
                             st.success(f"✅ Successfully uploaded transformed data to `{ROL_KEY}`.")
                         except Exception as e: st.error(f"An error occurred with the Rolodex file: {e}")
 
-        # --- (THING 1) Added 3rd column for Badging Data ---
         with col3_up:
             st.subheader("Badging Data File")
             badging_timestamp = get_s3_file_timestamp(s3, BADGING_KEY)
@@ -241,7 +227,6 @@ if check_password():
                 if badging_file and s3:
                     with st.spinner("Processing Badging Data file..."):
                         try:
-                            # No transform needed, just get the raw bytes
                             csv_bytes = badging_file.getvalue()
                             backup_and_upload_bytes(csv_bytes, BADGING_KEY, s3)
                             st.success(f"✅ Successfully uploaded data to `{BADGING_KEY}`.")
@@ -306,33 +291,25 @@ if check_password():
     
     # --- Performance Metrics Tab ---
     with metrics_tab:
-        st.header("Patrick Agent - Performance Dashboard")
+        # --- (CHANGED) Renamed header ---
+        st.header("Agent Observability Hub")
 
-        # --- (THING 2) REPLACED MOCK DATA WITH DYNAMODB FETCH ---
-        @st.cache_data(ttl=60) # Cache for 60 seconds
+        @st.cache_data(ttl=60)
         def fetch_dynamodb_data(_dynamodb_resource, table_name):
-            """Fetches logs from DynamoDB from the last 7 days."""
             if not _dynamodb_resource:
                 st.error("DynamoDB resource is not initialized.")
-                return pd.DataFrame() # Return empty DF
+                return pd.DataFrame()
             
             try:
                 table = _dynamodb_resource.Table(table_name)
-                
-                # Calculate the timestamp for 7 days ago
                 seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-                # Format as ISO 8601 string (assuming this is how it's stored)
                 seven_days_ago_str = seven_days_ago.isoformat()
 
-                # Scan for all items in the last 7 days
-                # Note: A 'scan' can be slow/expensive. A GSI would be better for production.
                 response = table.scan(
                     FilterExpression=Attr('timestamp').gte(seven_days_ago_str)
                 )
-                
                 items = response.get('Items', [])
                 
-                # Handle pagination if the table is large
                 while 'LastEvaluatedKey' in response:
                     st.info("Fetching more data from DynamoDB...")
                     response = table.scan(
@@ -345,40 +322,35 @@ if check_password():
                     st.warning("No data found in DynamoDB for the last 7 days.")
                     return pd.DataFrame()
 
-                # Convert to DataFrame
                 df = pd.DataFrame(items)
 
-                # --- Data Type Conversion ---
-                # Convert DynamoDB Decimal types to standard Python numbers
+                # --- (CHANGED) Updated data type conversion and column handling ---
+                
+                # Convert DynamoDB Decimal types to numeric
                 numeric_cols = ['agentLatency', 'inputTokens', 'outputTokens']
                 for col in numeric_cols:
                     if col in df.columns:
-                        # Convert Decimal to float, then to integer, handling NaNs
                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
                     else:
-                        st.warning(f"Column '{col}' not found in DynamoDB data. Defaulting to 0.")
-                        df[col] = 0 # Add column if missing
+                        st.warning(f"Column '{col}' not found. Defaulting to 0.")
+                        df[col] = 0
 
-                # Convert timestamp string to datetime object
+                # Convert timestamp
                 if 'timestamp' in df.columns:
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                 else:
-                    st.error("Critical: 'timestamp' column not found in DynamoDB data.")
-                    df['timestamp'] = datetime.now(timezone.utc) # Add dummy to prevent crash
+                    st.error("Critical: 'timestamp' column not found.")
+                    df['timestamp'] = datetime.now(timezone.utc)
 
-                # Handle 'feedbackStatus' (might be 'None' or 'null' or just absent)
-                if 'feedbackStatus' not in df.columns:
-                    df['feedbackStatus'] = None
-                else:
-                    # Replace empty strings or other null-like values with None
-                    df['feedbackStatus'] = df['feedbackStatus'].replace(['', 'null'], [None, None])
-
-                # Ensure all required columns exist for robustness
-                required_cols = ['userMessage', 'agentResponse', 'status']
-                for col in required_cols:
+                # Handle optional text/feedback columns
+                text_cols = ['feedbackStatus', 'feedbackReason', 'agentRationale', 'userMessage', 'agentResponse', 'status']
+                for col in text_cols:
                     if col not in df.columns:
-                        st.warning(f"Column '{col}' not found in DynamoDB data. Filling with 'N/A'.")
-                        df[col] = "N/A"
+                        st.warning(f"Column '{col}' not found. Filling with 'N/A'.")
+                        df[col] = "N/A" # Use "N/A" for string columns
+                    else:
+                        # Replace empty strings or other null-like values with "N/A"
+                        df[col] = df[col].replace(['', 'null', None, 'NaN'], "N/A")
                         
                 df.sort_values(by="timestamp", ascending=False, inplace=True)
                 return df
@@ -387,38 +359,32 @@ if check_password():
                 st.error(f"Error fetching data from DynamoDB: {e}")
                 st.info("Displaying empty dashboard.")
                 return pd.DataFrame()
-        # --- END OF DYNAMODB FETCH ---
 
-        # --- (THING 2) METRIC CALCULATION (Modified to remove 7-day filter) ---
+        # --- (CHANGED) Updated Metric Calculation ---
         def calculate_metrics(df):
-            """Calculates all key metrics from the log data.
-               Assumes df is already filtered for the desired time period (e.g., last 7 days)."""
-            
-            # Handle case where DataFrame is empty
             if df.empty:
                 return {
                     "total_queries": 0, "avg_latency_sec": 0, "positive_feedback_rate": 0,
-                    "total_tokens": 0, "total_cost": 0, "avg_cost_per_query": 0
+                    "total_input_tokens": 0, "total_output_tokens": 0, # <-- CHANGED
+                    "total_cost": 0, "avg_cost_per_query": 0
                 }
             
-            # Data is already pre-filtered by the fetch function
             total_queries = len(df)
             avg_latency_ms = df['agentLatency'].mean()
             
-            # Feedback metrics
-            feedback_counts = df['feedbackStatus'].value_counts()
+            # Feedback metrics (exclude "N/A")
+            feedback_counts = df[df['feedbackStatus'] != 'N/A']['feedbackStatus'].value_counts()
             positive_feedback = feedback_counts.get('positive', 0)
             total_feedback = feedback_counts.sum()
             positive_rate = (positive_feedback / total_feedback * 100) if total_feedback > 0 else 0
             
-            # Token & Cost metrics
+            # --- (CHANGED) Token metrics ---
             total_input_tokens = df['inputTokens'].sum()
             total_output_tokens = df['outputTokens'].sum()
-            total_tokens = total_input_tokens + total_output_tokens
             
-            # Pricing: Claude 3 Haiku (as per original code)
-            input_cost_per_million = 0.25 # $0.25 per 1M tokens
-            output_cost_per_million = 1.25 # $1.25 per 1M tokens
+            # Pricing: Claude 3 Haiku
+            input_cost_per_million = 0.25
+            output_cost_per_million = 1.25
 
             total_cost = (total_input_tokens / 1_000_000 * input_cost_per_million) + \
                          (total_output_tokens / 1_000_000 * output_cost_per_million)
@@ -429,20 +395,19 @@ if check_password():
                 "total_queries": total_queries,
                 "avg_latency_sec": avg_latency_ms / 1000 if not pd.isna(avg_latency_ms) else 0,
                 "positive_feedback_rate": positive_rate,
-                "total_tokens": total_tokens,
+                "total_input_tokens": total_input_tokens, # <-- CHANGED
+                "total_output_tokens": total_output_tokens, # <-- CHANGED
                 "total_cost": total_cost,
                 "avg_cost_per_query": avg_cost_per_query
             }
 
-        # --- (THING 2) DASHBOARD UI (Updated to use fetch function and handle empty data) ---
-        
-        log_df = pd.DataFrame() # Initialize as empty
+        # --- DASHBOARD UI ---
+        log_df = pd.DataFrame()
         if dynamodb:
             log_df = fetch_dynamodb_data(dynamodb, DYNAMODB_TABLE_NAME)
         else:
             st.error("DynamoDB client not initialized. Cannot display metrics.")
 
-        # Only display metrics if we successfully fetched data
         if log_df.empty:
             st.warning("No performance data available to display.")
         else:
@@ -458,22 +423,69 @@ if check_password():
 
             st.markdown("---")
             
-            col5, col6 = st.columns(2)
+            col5, col6 = st.columns([1, 2]) # Give chart more space
+            
+            # --- (CHANGED) Token Consumption Section ---
             with col5:
                 st.subheader("Token Consumption")
-                st.metric("Total Tokens Used", f"{metrics['total_tokens']:,}")
+                st.metric("Total Input Tokens", f"{metrics['total_input_tokens']:,}")
+                st.metric("Total Output Tokens", f"{metrics['total_output_tokens']:,}")
+                
+                st.subheader("Cost Analysis")
+                st.metric("Total Cost (Est.)", f"${metrics['total_cost']:.2f}")
                 st.metric("Avg. Cost per Query", f"${metrics['avg_cost_per_query']:.4f}")
 
+            # --- (CHANGED) Daily Query Volume Chart ---
             with col6:
                 st.subheader("Daily Query Volume")
-                daily_counts = log_df.set_index('timestamp').resample('D').size()
-                daily_counts.index = daily_counts.index.strftime('%b %d')
-                st.bar_chart(daily_counts)
+                # Resample data and reset index to get 'timestamp' and 'count' columns
+                daily_counts_df = log_df.set_index('timestamp').resample('D').size().reset_index(name='count')
+                # Format date for better readability
+                daily_counts_df['Date'] = daily_counts_df['timestamp'].dt.strftime('%b %d')
+
+                # Create Altair chart
+                chart = alt.Chart(daily_counts_df).mark_bar().encode(
+                    x=alt.X('Date', sort=None), # Use formatted date, no sorting
+                    y=alt.Y('count', title='Total Queries'),
+                    tooltip=[
+                        'Date',
+                        alt.Tooltip('count', title='Total Queries')
+                    ]
+                ).interactive()
+                
+                st.altair_chart(chart, use_container_width=True)
             
             st.markdown("---")
             
-            st.subheader("Recent Interactions")
-            st.dataframe(
-                log_df[['timestamp', 'userMessage', 'agentResponse', 'agentLatency', 'feedbackStatus']].head(20),
-                use_container_width=True
+            # --- (CHANGED) Recent Interactions Table ---
+            st.subheader("Interaction Log Explorer")
+            st.markdown("Click on `agentRationale` or `agentResponse` cells to view the full text.")
+            
+            st.data_editor(
+                log_df,
+                column_config={
+                    "timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
+                    "userMessage": st.column_config.TextColumn("User Message"),
+                    "agentRationale": st.column_config.TextColumn("Agent Rationale (Click to expand)"),
+                    "agentResponse": st.column_config.TextColumn("Agent Response (Click to expand)"),
+                    "agentLatency": st.column_config.NumberColumn("Latency (ms)", format="%d ms"),
+                    "feedbackStatus": st.column_config.TextColumn("Feedback"),
+                    "feedbackReason": st.column_config.TextColumn("Feedback Reason"),
+                    "inputTokens": st.column_config.NumberColumn("Input Tokens"),
+                    "outputTokens": st.column_config.NumberColumn("Output Tokens"),
+                    "status": st.column_config.TextColumn("Status"),
+                    # Hide columns we don't need to see
+                    "interaction_id": None,
+                    "sessionId": None,
+                    "feedbackTimestamp": None,
+                    "feedbackUser": None,
+                    "sourceChannel": None
+                },
+                column_order=(
+                    "timestamp", "userMessage", "agentRationale", "agentResponse", 
+                    "status", "agentLatency", "feedbackStatus", "feedbackReason",
+                    "inputTokens", "outputTokens"
+                ),
+                use_container_width=True,
+                height=600 # Set a fixed height for the table
             )
