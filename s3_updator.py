@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import uuid
 import random
 from botocore.exceptions import ClientError
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key # <-- Import Key for GSI query (if you use it later)
 from decimal import Decimal
 import altair as alt  
 
@@ -293,7 +293,15 @@ if check_password():
     with metrics_tab:
         st.header("📊 Agent Observability Hub")
 
-        @st.cache_data(ttl=60)
+        # --- Refresh button and cache setting ---
+        col_header, col_button = st.columns([1, 0.2]) 
+        with col_button:
+            if st.button("🔄 Force Refresh Data"):
+                fetch_dynamodb_data.clear()
+                st.success("Data refresh triggered! Cache is clearing.")
+        
+        # --- Cache set to 1 hour (3600s) to save costs ---
+        @st.cache_data(ttl=3600) 
         def fetch_dynamodb_data(_dynamodb_resource, table_name):
             if not _dynamodb_resource:
                 st.error("DynamoDB resource is not initialized.")
@@ -301,21 +309,25 @@ if check_password():
             
             try:
                 table = _dynamodb_resource.Table(table_name)
+                
                 seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
                 seven_days_ago_str = seven_days_ago.isoformat()
 
-                response = table.scan(
-                    FilterExpression=Attr('timestamp').gte(seven_days_ago_str)
-                )
-                items = response.get('Items', [])
-                
-                while 'LastEvaluatedKey' in response:
-                    st.info("Fetching more data from DynamoDB...")
+                # --- This is still the expensive SCAN operation ---
+                # --- But it will only run once per hour, or when the button is pressed ---
+                with st.spinner("Fetching logs from DynamoDB... (This may take a moment)"):
                     response = table.scan(
-                        FilterExpression=Attr('timestamp').gte(seven_days_ago_str),
-                        ExclusiveStartKey=response['LastEvaluatedKey']
+                        FilterExpression=Attr('timestamp').gte(seven_days_ago_str)
                     )
-                    items.extend(response.get('Items', []))
+                    items = response.get('Items', [])
+                    
+                    while 'LastEvaluatedKey' in response:
+                        st.info("Fetching more data from DynamoDB...")
+                        response = table.scan(
+                            FilterExpression=Attr('timestamp').gte(seven_days_ago_str),
+                            ExclusiveStartKey=response['LastEvaluatedKey']
+                        )
+                        items.extend(response.get('Items', []))
 
                 if not items:
                     st.warning("No data found in DynamoDB for the last 7 days.")
@@ -354,7 +366,8 @@ if check_password():
                 st.error(f"Error fetching data from DynamoDB: {e}")
                 st.info("Displaying empty dashboard.")
                 return pd.DataFrame()
-
+        
+        # --- Metric Calculation (No Changes) ---
         def calculate_metrics(df):
             if df.empty:
                 return {
@@ -367,21 +380,17 @@ if check_password():
             total_queries = len(df)
             avg_latency_ms = df['agentLatency'].mean()
             
-            # Feedback metrics
             feedback_counts = df[df['feedbackStatus'] != 'N/A']['feedbackStatus'].value_counts()
             positive_feedback = feedback_counts.get('positive', 0)
             total_feedback = feedback_counts.sum()
             positive_rate = (positive_feedback / total_feedback * 100) if total_feedback > 0 else 0
             
-            # Token metrics
             total_input_tokens = df['inputTokens'].sum()
             total_output_tokens = df['outputTokens'].sum()
             
-            # Error metrics
             total_errors = (df['status'] != 'SUCCESS').sum()
             error_rate = (total_errors / total_queries * 100) if total_queries > 0 else 0
 
-            # Cost metrics
             input_cost_per_million = 0.25
             output_cost_per_million = 1.25
             total_cost = (total_input_tokens / 1_000_000 * input_cost_per_million) + \
@@ -423,7 +432,6 @@ if check_password():
 
             st.markdown("---")
             
-            # --- (CHANGED) Adjusted column ratios for better chart display ---
             col_tk_cost, col_vol = st.columns([1, 1.5])
             
             with col_tk_cost:
@@ -450,50 +458,48 @@ if check_password():
             
             st.markdown("---")
 
-            # --- (CHANGED) Adjusted column ratios ---
-            col_lat, col_fb = st.columns([1.5, 1])
+            # --- (CHANGED) Removed the columns for Latency and Feedback ---
+            # They are now stacked vertically for full width.
+            
+            st.subheader("⏱️ Latency Distribution")
+            p90 = log_df['agentLatency'].quantile(0.90)
+            p95 = log_df['agentLatency'].quantile(0.95)
+            st.caption(f"**P90:** {p90:.0f} ms  |  **P95:** {p95:.0f} ms")
 
-            with col_lat:
-                st.subheader("⏱️ Latency Distribution")
-                p90 = log_df['agentLatency'].quantile(0.90)
-                p95 = log_df['agentLatency'].quantile(0.95)
-                st.caption(f"**P90:** {p90:.0f} ms  |  **P95:** {p95:.0f} ms")
+            chart_lat = alt.Chart(log_df).mark_bar().encode(
+                x=alt.X('agentLatency', bin=alt.Bin(maxbins=50), title='Latency (ms)'),
+                y=alt.Y('count()', title='Query Count'),
+                tooltip=[alt.Tooltip('agentLatency', bin=alt.Bin(maxbins=50), title='Latency Bucket'), 'count()']
+            ).interactive()
+            st.altair_chart(chart_lat, use_container_width=True)
 
-                chart = alt.Chart(log_df).mark_bar().encode(
-                    x=alt.X('agentLatency', bin=alt.Bin(maxbins=50), title='Latency (ms)'),
-                    y=alt.Y('count()', title='Query Count'),
-                    tooltip=[alt.Tooltip('agentLatency', bin=alt.Bin(maxbins=50), title='Latency Bucket'), 'count()']
-                ).interactive()
-                st.altair_chart(chart, use_container_width=True)
 
-            with col_fb:
-                st.subheader("📉 Top Negative Feedback Drivers")
-                negative_feedback_df = log_df[
-                    (log_df['feedbackStatus'] == 'negative') & 
-                    (log_df['feedbackReason'] != 'N/A')
-                ]
+            st.subheader("📉 Top Negative Feedback Drivers")
+            negative_feedback_df = log_df[
+                (log_df['feedbackStatus'] == 'negative') & 
+                (log_df['feedbackReason'] != 'N/A')
+            ]
+            
+            if negative_feedback_df.empty:
+                st.info("No negative feedback reasons recorded.")
+            else:
+                reason_counts = negative_feedback_df['feedbackReason'].value_counts().reset_index()
+                reason_counts.columns = ['Reason', 'Count']
                 
-                if negative_feedback_df.empty:
-                    st.info("No negative feedback reasons recorded.")
-                else:
-                    reason_counts = negative_feedback_df['feedbackReason'].value_counts().reset_index()
-                    reason_counts.columns = ['Reason', 'Count']
-                    
-                    # --- (CHANGED) Replaced dataframe with a horizontal bar chart ---
-                    chart = alt.Chart(reason_counts).mark_bar().encode(
-                        x=alt.X('Count:Q', title='Number of Reports'),
-                        y=alt.Y('Reason:N', title='Reason', sort='-x'), # Sort descending
-                        tooltip=['Reason', 'Count']
-                    ).interactive()
-                    
-                    st.altair_chart(chart, use_container_width=True)
+                chart_fb = alt.Chart(reason_counts).mark_bar().encode(
+                    x=alt.X('Count:Q', title='Number of Reports'),
+                    # --- (CHANGED) Added axis=alt.Axis(labelLimit=0) to force full labels ---
+                    y=alt.Y('Reason:N', title='Reason', sort='-x', axis=alt.Axis(labelLimit=0)),
+                    tooltip=['Reason', 'Count']
+                ).interactive()
+                
+                st.altair_chart(chart_fb, use_container_width=True)
 
             st.markdown("---")
             
             st.subheader("🔬 Session Explorer")
-            st.markdown("Expand any session to see its full interaction thread, sorted chronologically.")
+            st.markdown("Expand any session to see its full interaction thread, sorted chronologically. Data is cached for 1 hour.")
 
-            # Define column config once
             column_config={
                 "timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
                 "userMessage": st.column_config.TextColumn("User Message"),
@@ -509,7 +515,6 @@ if check_password():
                 "feedbackUser": None, "sourceChannel": None
             }
             
-            # Aggregate sessions for summary
             sessions = log_df.groupby('sessionId').agg(
                 latest_timestamp=('timestamp', 'max'),
                 message_count=('timestamp', 'count'),
@@ -520,7 +525,6 @@ if check_password():
                 st.info("No sessions to display.")
             else:
                 for session_id, data in sessions.iterrows():
-                    # --- (CHANGED) Added emoji and bolded keys to expander title ---
                     summary = (
                         f"💬 **Session:** `{session_id}` | "
                         f"**Messages:** {data['message_count']} | "
@@ -540,6 +544,6 @@ if check_password():
                                 "inputTokens", "outputTokens"
                             ),
                             use_container_width=True,
-                            height=300 + (len(session_df) * 35), # Dynamically adjust height
+                            height=300 + (len(session_df) * 35),
                             hide_index=True
                         )
