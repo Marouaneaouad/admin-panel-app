@@ -9,7 +9,7 @@ import random
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Attr
 from decimal import Decimal
-import altair as alt  # --- ADDED FOR BETTER CHARTS ---
+import altair as alt  # Required for new charts
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -291,7 +291,6 @@ if check_password():
     
     # --- Performance Metrics Tab ---
     with metrics_tab:
-        # --- (CHANGED) Renamed header ---
         st.header("Agent Observability Hub")
 
         @st.cache_data(ttl=60)
@@ -324,9 +323,7 @@ if check_password():
 
                 df = pd.DataFrame(items)
 
-                # --- (CHANGED) Updated data type conversion and column handling ---
-                
-                # Convert DynamoDB Decimal types to numeric
+                # --- Data Type Conversion and Column Handling ---
                 numeric_cols = ['agentLatency', 'inputTokens', 'outputTokens']
                 for col in numeric_cols:
                     if col in df.columns:
@@ -335,21 +332,20 @@ if check_password():
                         st.warning(f"Column '{col}' not found. Defaulting to 0.")
                         df[col] = 0
 
-                # Convert timestamp
                 if 'timestamp' in df.columns:
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                 else:
                     st.error("Critical: 'timestamp' column not found.")
                     df['timestamp'] = datetime.now(timezone.utc)
-
-                # Handle optional text/feedback columns
-                text_cols = ['feedbackStatus', 'feedbackReason', 'agentRationale', 'userMessage', 'agentResponse', 'status']
+                
+                # --- (CHANGED) Added 'sessionId' to the list of handled text columns ---
+                text_cols = ['feedbackStatus', 'feedbackReason', 'agentRationale', 
+                             'userMessage', 'agentResponse', 'status', 'sessionId']
                 for col in text_cols:
                     if col not in df.columns:
                         st.warning(f"Column '{col}' not found. Filling with 'N/A'.")
-                        df[col] = "N/A" # Use "N/A" for string columns
+                        df[col] = "N/A"
                     else:
-                        # Replace empty strings or other null-like values with "N/A"
                         df[col] = df[col].replace(['', 'null', None, 'NaN'], "N/A")
                         
                 df.sort_values(by="timestamp", ascending=False, inplace=True)
@@ -365,40 +361,45 @@ if check_password():
             if df.empty:
                 return {
                     "total_queries": 0, "avg_latency_sec": 0, "positive_feedback_rate": 0,
-                    "total_input_tokens": 0, "total_output_tokens": 0, # <-- CHANGED
-                    "total_cost": 0, "avg_cost_per_query": 0
+                    "total_input_tokens": 0, "total_output_tokens": 0, 
+                    "total_cost": 0, "avg_cost_per_query": 0,
+                    "total_errors": 0, "error_rate": 0  # <-- ADDED
                 }
             
             total_queries = len(df)
             avg_latency_ms = df['agentLatency'].mean()
             
-            # Feedback metrics (exclude "N/A")
+            # Feedback metrics
             feedback_counts = df[df['feedbackStatus'] != 'N/A']['feedbackStatus'].value_counts()
             positive_feedback = feedback_counts.get('positive', 0)
             total_feedback = feedback_counts.sum()
             positive_rate = (positive_feedback / total_feedback * 100) if total_feedback > 0 else 0
             
-            # --- (CHANGED) Token metrics ---
+            # Token metrics
             total_input_tokens = df['inputTokens'].sum()
             total_output_tokens = df['outputTokens'].sum()
             
-            # Pricing: Claude 3 Haiku
+            # --- (ADDED) Error metrics ---
+            total_errors = (df['status'] != 'SUCCESS').sum()
+            error_rate = (total_errors / total_queries * 100) if total_queries > 0 else 0
+
+            # Cost metrics
             input_cost_per_million = 0.25
             output_cost_per_million = 1.25
-
             total_cost = (total_input_tokens / 1_000_000 * input_cost_per_million) + \
                          (total_output_tokens / 1_000_000 * output_cost_per_million)
-            
             avg_cost_per_query = total_cost / total_queries if total_queries > 0 else 0
             
             return {
                 "total_queries": total_queries,
                 "avg_latency_sec": avg_latency_ms / 1000 if not pd.isna(avg_latency_ms) else 0,
                 "positive_feedback_rate": positive_rate,
-                "total_input_tokens": total_input_tokens, # <-- CHANGED
-                "total_output_tokens": total_output_tokens, # <-- CHANGED
+                "total_input_tokens": total_input_tokens,
+                "total_output_tokens": total_output_tokens,
                 "total_cost": total_cost,
-                "avg_cost_per_query": avg_cost_per_query
+                "avg_cost_per_query": avg_cost_per_query,
+                "total_errors": total_errors,  # <-- ADDED
+                "error_rate": error_rate      # <-- ADDED
             }
 
         # --- DASHBOARD UI ---
@@ -415,77 +416,129 @@ if check_password():
 
             st.markdown("### Key Metrics (Last 7 Days)")
             
-            col1, col2, col3, col4 = st.columns(4)
+            # --- (CHANGED) Switched to 5 columns for new metrics ---
+            col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("Total Queries", f"{metrics['total_queries']:,}")
             col2.metric("Avg. Agent Latency", f"{metrics['avg_latency_sec']:.2f} s")
             col3.metric("Positive Feedback", f"{metrics['positive_feedback_rate']:.1f}%")
-            col4.metric("Total Cost (Est.)", f"${metrics['total_cost']:.2f}")
+            col4.metric("Total Errors", f"{metrics['total_errors']:,}") # <-- ADDED
+            col5.metric("Error Rate", f"{metrics['error_rate']:.1f}%")   # <-- ADDED
 
             st.markdown("---")
             
-            col5, col6 = st.columns([1, 2]) # Give chart more space
+            col_tk, col_cost, col_vol = st.columns(3)
             
-            # --- (CHANGED) Token Consumption Section ---
-            with col5:
+            with col_tk:
                 st.subheader("Token Consumption")
                 st.metric("Total Input Tokens", f"{metrics['total_input_tokens']:,}")
                 st.metric("Total Output Tokens", f"{metrics['total_output_tokens']:,}")
                 
+            with col_cost:
                 st.subheader("Cost Analysis")
                 st.metric("Total Cost (Est.)", f"${metrics['total_cost']:.2f}")
                 st.metric("Avg. Cost per Query", f"${metrics['avg_cost_per_query']:.4f}")
 
-            # --- (CHANGED) Daily Query Volume Chart ---
-            with col6:
+            with col_vol:
                 st.subheader("Daily Query Volume")
-                # Resample data and reset index to get 'timestamp' and 'count' columns
                 daily_counts_df = log_df.set_index('timestamp').resample('D').size().reset_index(name='count')
-                # Format date for better readability
                 daily_counts_df['Date'] = daily_counts_df['timestamp'].dt.strftime('%b %d')
 
-                # Create Altair chart
                 chart = alt.Chart(daily_counts_df).mark_bar().encode(
-                    x=alt.X('Date', sort=None), # Use formatted date, no sorting
+                    x=alt.X('Date', sort=None),
                     y=alt.Y('count', title='Total Queries'),
-                    tooltip=[
-                        'Date',
-                        alt.Tooltip('count', title='Total Queries')
-                    ]
+                    tooltip=['Date', alt.Tooltip('count', title='Total Queries')]
                 ).interactive()
-                
                 st.altair_chart(chart, use_container_width=True)
             
             st.markdown("---")
+
+            # --- (NEW) Latency and Feedback Analysis Sections ---
+            col_lat, col_fb = st.columns(2)
+
+            with col_lat:
+                st.subheader("Latency Distribution")
+                # Calculate p90/p95
+                p90 = log_df['agentLatency'].quantile(0.90)
+                p95 = log_df['agentLatency'].quantile(0.95)
+                st.caption(f"**P90:** {p90:.0f} ms  |  **P95:** {p95:.0f} ms")
+
+                # Create histogram
+                chart = alt.Chart(log_df).mark_bar().encode(
+                    x=alt.X('agentLatency', bin=alt.Bin(maxbins=50), title='Latency (ms)'),
+                    y=alt.Y('count()', title='Query Count'),
+                    tooltip=[alt.Tooltip('agentLatency', bin=alt.Bin(maxbins=50), title='Latency Bucket'), 'count()']
+                ).interactive()
+                st.altair_chart(chart, use_container_width=True)
+
+            with col_fb:
+                st.subheader("Top Negative Feedback Drivers")
+                negative_feedback_df = log_df[
+                    (log_df['feedbackStatus'] == 'negative') & 
+                    (log_df['feedbackReason'] != 'N/A')
+                ]
+                
+                if negative_feedback_df.empty:
+                    st.info("No negative feedback reasons recorded.")
+                else:
+                    reason_counts = negative_feedback_df['feedbackReason'].value_counts().reset_index()
+                    reason_counts.columns = ['Reason', 'Count']
+                    st.dataframe(reason_counts, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
             
-            # --- (CHANGED) Recent Interactions Table ---
-            st.subheader("Interaction Log Explorer")
-            st.markdown("Click on `agentRationale` or `agentResponse` cells to view the full text.")
+            # --- (CHANGED) Session Explorer (Idea 2) ---
+            st.subheader("Session Explorer")
+            st.markdown("Expand any session to see its full interaction thread.")
+
+            # Define column config once
+            column_config={
+                "timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
+                "userMessage": st.column_config.TextColumn("User Message"),
+                "agentRationale": st.column_config.TextColumn("Agent Rationale (Click to expand)"),
+                "agentResponse": st.column_config.TextColumn("Agent Response (Click to expand)"),
+                "agentLatency": st.column_config.NumberColumn("Latency (ms)", format="%d ms"),
+                "feedbackStatus": st.column_config.TextColumn("Feedback"),
+                "feedbackReason": st.column_config.TextColumn("Feedback Reason"),
+                "inputTokens": st.column_config.NumberColumn("Input Tokens"),
+                "outputTokens": st.column_config.NumberColumn("Output Tokens"),
+                "status": st.column_config.TextColumn("Status"),
+                # Hide columns we don't need
+                "interaction_id": None, "sessionId": None, "feedbackTimestamp": None,
+                "feedbackUser": None, "sourceChannel": None
+            }
             
-            st.data_editor(
-                log_df,
-                column_config={
-                    "timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
-                    "userMessage": st.column_config.TextColumn("User Message"),
-                    "agentRationale": st.column_config.TextColumn("Agent Rationale (Click to expand)"),
-                    "agentResponse": st.column_config.TextColumn("Agent Response (Click to expand)"),
-                    "agentLatency": st.column_config.NumberColumn("Latency (ms)", format="%d ms"),
-                    "feedbackStatus": st.column_config.TextColumn("Feedback"),
-                    "feedbackReason": st.column_config.TextColumn("Feedback Reason"),
-                    "inputTokens": st.column_config.NumberColumn("Input Tokens"),
-                    "outputTokens": st.column_config.NumberColumn("Output Tokens"),
-                    "status": st.column_config.TextColumn("Status"),
-                    # Hide columns we don't need to see
-                    "interaction_id": None,
-                    "sessionId": None,
-                    "feedbackTimestamp": None,
-                    "feedbackUser": None,
-                    "sourceChannel": None
-                },
-                column_order=(
-                    "timestamp", "userMessage", "agentRationale", "agentResponse", 
-                    "status", "agentLatency", "feedbackStatus", "feedbackReason",
-                    "inputTokens", "outputTokens"
-                ),
-                use_container_width=True,
-                height=600 # Set a fixed height for the table
-            )
+            # Aggregate sessions for summary
+            sessions = log_df.groupby('sessionId').agg(
+                latest_timestamp=('timestamp', 'max'),
+                message_count=('timestamp', 'count'),
+                errors=('status', lambda s: (s != 'SUCCESS').sum())
+            ).sort_values(by='latest_timestamp', ascending=False)
+
+            if sessions.empty:
+                st.info("No sessions to display.")
+            else:
+                # Loop through sessions and create an expander for each
+                for session_id, data in sessions.iterrows():
+                    summary = (
+                        f"**Session:** {session_id}  |  "
+                        f"**Messages:** {data['message_count']}  |  "
+                        f"**Errors:** {data['errors']}  |  "
+                        f"**Last Active:** {data['latest_timestamp'].strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    
+                    with st.expander(summary):
+                        # Get the DF for this session and sort it chronologically
+                        session_df = log_df[log_df['sessionId'] == session_id].sort_values(by='timestamp', ascending=True)
+                        
+                        st.data_editor(
+                            session_df,
+                            column_config=column_config,
+                            column_order=(
+                                "timestamp", "userMessage", "agentRationale", "agentResponse", 
+                                "status", "agentLatency", "feedbackStatus", "feedbackReason",
+                                "inputTokens", "outputTokens"
+                            ),
+                            use_container_width=True,
+                            height=300 + (len(session_df) * 35), # Dynamically adjust height
+                            hide_index=True
+                        )
